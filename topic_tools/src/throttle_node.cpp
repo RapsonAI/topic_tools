@@ -32,6 +32,9 @@ namespace topic_tools
 
     const std::string throttle_type_str = declare_parameter<std::string>("throttle_type");
 
+    // TODO: quick solution for messages type
+    auto msg_per_sec_param = declare_parameter<std::vector<double>>("msgs_per_sec");
+
     use_wall_clock_ = declare_parameter("use_wall_clock", false);
 
     topic_instances_.clear();
@@ -46,7 +49,7 @@ namespace topic_tools
       if (throttle_type_str == "messages")
       {
         throttle_type_ = ThrottleType::MESSAGES;
-        instance.msgs_per_sec_ = declare_parameter<double>("msgs_per_sec");
+        instance.msgs_per_sec_ = msg_per_sec_param[i];
         instance.period_ = rclcpp::Rate(instance.msgs_per_sec_).period();
       }
       else if (throttle_type_str == "bytes")
