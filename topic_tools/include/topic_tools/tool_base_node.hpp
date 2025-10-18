@@ -16,41 +16,60 @@
 #define TOPIC_TOOLS__TOOL_BASE_NODE_HPP_
 
 #include <memory>
-#include <optional>  // NOLINT : https://github.com/ament/ament_lint/pull/324
+#include <optional> // NOLINT : https://github.com/ament/ament_lint/pull/324
 #include <string>
 #include <utility>
 #include <mutex>
+#include <vector>
 
 #include "rclcpp/rclcpp.hpp"
 #include "topic_tools/visibility_control.h"
 
 namespace topic_tools
 {
-class ToolBaseNode : public rclcpp::Node
-{
+  struct TopicInstance
+  {
+    std::string input_topic_;
+    std::string output_topic_;
+    bool lazy_{ false };
+
+    double msgs_per_sec_;
+    std::chrono::nanoseconds period_;
+    int64_t bytes_per_sec_;
+    double window_;
+    rclcpp::Time last_time_;
+
+    std::shared_ptr<rclcpp::GenericPublisher>pub_;
+    std::shared_ptr<rclcpp::GenericSubscription>sub_;
+    std::optional<std::string>topic_type_;
+    std::optional<rclcpp::QoS>qos_profile_;
+  };
+  class ToolBaseNode : public rclcpp::Node
+  {
 public:
-  TOPIC_TOOLS_PUBLIC
-  ToolBaseNode(const std::string & node_name, const rclcpp::NodeOptions & options);
+
+    TOPIC_TOOLS_PUBLIC
+    ToolBaseNode(
+      const std::string& node_name,
+      const rclcpp::NodeOptions& options);
 
 protected:
-  virtual void process_message(std::shared_ptr<rclcpp::SerializedMessage> msg) = 0;
 
-  /// Returns an optional pair <topic type, QoS profile> of the first found source publishing
-  /// on `input_topic_` if at least one source is found
-  std::optional<std::pair<std::string, rclcpp::QoS>> try_discover_source();
-  virtual void make_subscribe_unsubscribe_decisions();
+    virtual void process_message(
+      TopicInstance& topic,
+      std::shared_ptr<rclcpp::SerializedMessage>msg) = 0;
 
-  std::chrono::duration<float> discovery_period_ = std::chrono::milliseconds{100};
-  std::optional<std::string> topic_type_;
-  std::optional<rclcpp::QoS> qos_profile_;
-  std::string input_topic_;
-  std::string output_topic_;
-  bool lazy_;
-  rclcpp::TimerBase::SharedPtr discovery_timer_;
-  rclcpp::GenericPublisher::SharedPtr pub_;
-  rclcpp::GenericSubscription::SharedPtr sub_;
-  std::mutex pub_mutex_;
-};
-}  // namespace topic_tools
+    /// Returns an optional pair <topic type, QoS profile> of the first found
+    // source publishing
+    /// on `input_topic_` if at least one source is found
+    std::optional<std::pair<std::string, rclcpp::QoS>>try_discover_source(TopicInstance& topic);
+    virtual void make_subscribe_unsubscribe_decisions();
+    std::vector<TopicInstance>topic_instances_;
+
+    std::chrono::duration<float>discovery_period_ = std::chrono::milliseconds{ 100 };
+    rclcpp::TimerBase::SharedPtr discovery_timer_;
+    std::mutex pub_mutex_;
+  };
+} // namespace topic_tools
 
 #endif  // TOPIC_TOOLS__TOOL_BASE_NODE_HPP_

@@ -23,74 +23,108 @@
 
 namespace topic_tools
 {
-ThrottleNode::ThrottleNode(const rclcpp::NodeOptions & options)
-: ToolBaseNode("throttle", options)
-{
-  input_topic_ = declare_parameter<std::string>("input_topic");
-  output_topic_ = declare_parameter<std::string>("output_topic", input_topic_ + "_throttle");
-  lazy_ = declare_parameter<bool>("lazy", false);
+  ThrottleNode::ThrottleNode(const rclcpp::NodeOptions& options)
+  : ToolBaseNode("throttle", options)
+  {
+    auto input_topics_ = declare_parameter<std::vector<std::string>>("input_topics");
+    auto output_topics_ = declare_parameter<std::vector<std::string>>("output_topics");
+    auto lazy_ = declare_parameter<bool>("lazy", false);
 
-  const std::string throttle_type_str = declare_parameter<std::string>("throttle_type");
-  if (throttle_type_str == "messages") {
-    throttle_type_ = ThrottleType::MESSAGES;
-    msgs_per_sec_ = declare_parameter<double>("msgs_per_sec");
-    period_ = rclcpp::Rate(msgs_per_sec_).period();
-  } else if (throttle_type_str == "bytes") {
-    throttle_type_ = ThrottleType::BYTES;
-    bytes_per_sec_ = declare_parameter<int>("bytes_per_sec");
-    window_ = declare_parameter<double>("window");
-  } else {
-    RCLCPP_ERROR(get_logger(), "Unknown throttle type");
-    return;
+    const std::string throttle_type_str = declare_parameter<std::string>("throttle_type");
+
+    use_wall_clock_ = declare_parameter("use_wall_clock", false);
+
+    topic_instances_.clear();
+
+    for (size_t i = 0; i < input_topics_.size(); ++i)
+    {
+      TopicInstance instance;
+      instance.input_topic_ = input_topics_[i];
+      instance.output_topic_ = output_topics_[i];
+      instance.lazy_ = lazy_;
+
+      if (throttle_type_str == "messages")
+      {
+        throttle_type_ = ThrottleType::MESSAGES;
+        instance.msgs_per_sec_ = declare_parameter<double>("msgs_per_sec");
+        instance.period_ = rclcpp::Rate(instance.msgs_per_sec_).period();
+      }
+      else if (throttle_type_str == "bytes")
+      {
+        throttle_type_ = ThrottleType::BYTES;
+        instance.bytes_per_sec_ = declare_parameter<int>("bytes_per_sec");
+        instance.window_ = declare_parameter<double>("window");
+      }
+      else
+      {
+        RCLCPP_ERROR(get_logger(), "Unknown throttle type");
+        return;
+      }
+
+      instance.last_time_ = use_wall_clock_ ? rclcpp::Clock{}.now() : this->now();
+
+      topic_instances_.push_back(std::move(instance));
+    }
+
+    discovery_timer_ = this->create_wall_timer(
+      discovery_period_,
+      std::bind(&ThrottleNode::make_subscribe_unsubscribe_decisions, this));
+
+    make_subscribe_unsubscribe_decisions();
   }
-  use_wall_clock_ = declare_parameter("use_wall_clock", false);
-  last_time_ = use_wall_clock_ ? rclcpp::Clock{}.now() : this->now();
 
-  discovery_timer_ = this->create_wall_timer(
-    discovery_period_,
-    std::bind(&ThrottleNode::make_subscribe_unsubscribe_decisions, this));
+  void ThrottleNode::process_message(
+    TopicInstance& topic,
+    std::shared_ptr<rclcpp::SerializedMessage>msg)
+  {
+    std::scoped_lock lock(pub_mutex_);
 
-  make_subscribe_unsubscribe_decisions();
-}
+    if (!topic.pub_)
+    {
+      return;
+    }
 
-void ThrottleNode::process_message(std::shared_ptr<rclcpp::SerializedMessage> msg)
-{
-  std::scoped_lock lock(pub_mutex_);
-  if (!pub_) {
-    return;
+    const auto& now = use_wall_clock_ ? rclcpp::Clock{}.now() : this->now();
+
+    if (throttle_type_ == ThrottleType::MESSAGES)
+    {
+      if (topic.last_time_ > now)
+      {
+        RCLCPP_WARN(
+          get_logger(), "Detected jump back in time, resetting throttle period to now for.");
+        topic.last_time_ = now;
+      }
+
+      if ((now - topic.last_time_).nanoseconds() >= topic.period_.count())
+      {
+        topic.pub_->publish(*msg);
+        topic.last_time_ = now;
+      }
+    }
+    else if (throttle_type_ == ThrottleType::BYTES)
+    {
+      while (!sent_deque_.empty() && sent_deque_.front().first < now.seconds() - topic.window_)
+      {
+        sent_deque_.pop_front();
+      }
+
+      // sum up how many bytes are in the window
+      const int64_t bytes = std::accumulate(
+        sent_deque_.begin(),
+        sent_deque_.end(),
+        int64_t{ 0 },
+        [](int64_t a, const auto& b) {
+          return a + b.second;
+        });
+
+      if (bytes < topic.bytes_per_sec_)
+      {
+        topic.pub_->publish(*msg);
+        sent_deque_.emplace_back(now.seconds(), msg->size());
+      }
+    }
   }
-
-  const auto & now = use_wall_clock_ ? rclcpp::Clock{}.now() : this->now();
-  if (throttle_type_ == ThrottleType::MESSAGES) {
-    if (last_time_ > now) {
-      RCLCPP_WARN(
-        get_logger(), "Detected jump back in time, resetting throttle period to now for.");
-      last_time_ = now;
-    }
-    if ((now - last_time_).nanoseconds() >= period_.count()) {
-      pub_->publish(*msg);
-      last_time_ = now;
-    }
-  } else if (throttle_type_ == ThrottleType::BYTES) {
-    while (!sent_deque_.empty() && sent_deque_.front().first < now.seconds() - window_) {
-      sent_deque_.pop_front();
-    }
-    // sum up how many bytes are in the window
-    const int64_t bytes = std::accumulate(
-      sent_deque_.begin(),
-      sent_deque_.end(),
-      int64_t{0},
-      [](int64_t a, const auto & b) {
-        return a + b.second;
-      });
-    if (bytes < bytes_per_sec_) {
-      pub_->publish(*msg);
-      sent_deque_.emplace_back(now.seconds(), msg->size());
-    }
-  }
-}
-
-}  // namespace topic_tools
+} // namespace topic_tools
 
 #include "rclcpp_components/register_node_macro.hpp"
 RCLCPP_COMPONENTS_REGISTER_NODE(topic_tools::ThrottleNode)

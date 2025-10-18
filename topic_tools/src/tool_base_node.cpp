@@ -22,149 +22,206 @@
 
 namespace topic_tools
 {
-ToolBaseNode::ToolBaseNode(const std::string & node_name, const rclcpp::NodeOptions & options)
-: rclcpp::Node(node_name, options)
-{
-}
+  ToolBaseNode::ToolBaseNode(
+    const std::string& node_name,
+    const rclcpp::NodeOptions& options)
+  : rclcpp::Node(node_name, options)
+  {}
 
-void ToolBaseNode::make_subscribe_unsubscribe_decisions()
-{
-  if (auto source_info = try_discover_source()) {
-    // always relay same topic type and QoS profile as the first available source
-    if (!topic_type_ || !qos_profile_ || *topic_type_ != source_info->first ||
-      *qos_profile_ != source_info->second || !pub_)
+  void ToolBaseNode::make_subscribe_unsubscribe_decisions()
+  {
+    for (auto& topic : topic_instances_)
     {
-      topic_type_ = source_info->first;
-      qos_profile_ = source_info->second;
-
-      rclcpp::PublisherOptions options;
-      options.qos_overriding_options = rclcpp::QosOverridingOptions(
-        {
-          rclcpp::QosPolicyKind::Deadline,
-          rclcpp::QosPolicyKind::Durability,
-          rclcpp::QosPolicyKind::History,
-          rclcpp::QosPolicyKind::Depth,
-          rclcpp::QosPolicyKind::Lifespan,
-          rclcpp::QosPolicyKind::Liveliness,
-          rclcpp::QosPolicyKind::LivelinessLeaseDuration,
-          rclcpp::QosPolicyKind::Reliability,
-        });
-
-      // NOTE: Because generic_publisher doesn't currently declare the qos parameters automatically
-      // Passing options through so once that's fixed in rclcpp it'll automatically take effect
-      const rclcpp::QoS & actual_qos = rclcpp::detail::declare_qos_parameters(
-        options.qos_overriding_options,
-        *this,
-        get_node_topics_interface()->resolve_topic_name(output_topic_),
-        *qos_profile_,
-        rclcpp::detail::PublisherQosParametersTraits{});
-
-      std::scoped_lock lock(pub_mutex_);
-      pub_ = this->create_generic_publisher(output_topic_, *topic_type_, actual_qos, options);
-    }
-    // at this point it is certain that our publisher exists
-
-    // If lazy, only subscribe to input_topic if there is at least 1 subscriber on the output_topic
-    if (!lazy_ ||
-      pub_->get_subscription_count() + pub_->get_intra_process_subscription_count() > 0)
-    {
-      // subscription exists already but needs changing if input_topic_ changes
-      if (sub_ &&
-        sub_->get_topic_name() != get_node_topics_interface()->resolve_topic_name(input_topic_))
+      if (auto source_info = try_discover_source(topic))
       {
-        sub_.reset();
+        // always relay same topic type and QoS profile as the first available
+        // source
+        if (!topic.topic_type_ || !topic.qos_profile_ ||
+          (*topic.topic_type_ != source_info->first) ||
+          (*topic.qos_profile_ != source_info->second) || !topic.pub_)
+        {
+          topic.topic_type_ = source_info->first;
+          topic.qos_profile_ = source_info->second;
+
+          rclcpp::PublisherOptions options;
+          options.qos_overriding_options = rclcpp::QosOverridingOptions(
+          {
+            rclcpp::QosPolicyKind::Deadline,
+            rclcpp::QosPolicyKind::Durability,
+            rclcpp::QosPolicyKind::History,
+            rclcpp::QosPolicyKind::Depth,
+            rclcpp::QosPolicyKind::Lifespan,
+            rclcpp::QosPolicyKind::Liveliness,
+            rclcpp::QosPolicyKind::LivelinessLeaseDuration,
+            rclcpp::QosPolicyKind::Reliability,
+          });
+
+          // NOTE: Because generic_publisher doesn't currently declare the qos
+          // parameters automatically
+          // Passing options through so once that's fixed in rclcpp it'll
+          // automatically take effect
+          const rclcpp::QoS& actual_qos = rclcpp::detail::declare_qos_parameters(
+            options.qos_overriding_options,
+            *this,
+            get_node_topics_interface()->resolve_topic_name(topic.output_topic_),
+            *topic.qos_profile_,
+            rclcpp::detail::PublisherQosParametersTraits{});
+
+          std::scoped_lock lock(pub_mutex_);
+          topic.pub_ = this->create_generic_publisher(
+            topic.output_topic_,
+            *topic.topic_type_,
+            actual_qos,
+            options);
+        }
+
+        // at this point it is certain that our publisher exists
+
+        // If lazy, only subscribe to input_topic if there is at least 1
+        // subscriber on the output_topic
+        if (!topic.lazy_ ||
+          (topic.pub_->get_subscription_count() +
+          topic.pub_->get_intra_process_subscription_count() > 0))
+        {
+          // subscription exists already but needs changing if input_topic_
+          // changes
+          if (topic.sub_ &&
+            (topic.sub_->get_topic_name() !=
+            get_node_topics_interface()->resolve_topic_name(topic.input_topic_)))
+          {
+            topic.sub_.reset();
+          }
+
+          // subscription needs creating if it doesn't exist
+          if (!topic.sub_)
+          {
+            topic.sub_ = this->create_generic_subscription(
+              topic.input_topic_,
+              *topic.topic_type_,
+              *topic.qos_profile_,
+              [this, &topic](std::shared_ptr<rclcpp::SerializedMessage>msg) {
+                this->process_message(topic, msg);
+              });
+          }
+        }
+        else
+        {
+          // Lazy and no subscriber doesn't need to subscribe
+          topic.sub_.reset();
+        }
       }
-      // subscription needs creating if it doesn't exist
-      if (!sub_) {
-        sub_ = this->create_generic_subscription(
-          input_topic_, *topic_type_, *qos_profile_,
-          std::bind(&ToolBaseNode::process_message, this, std::placeholders::_1));
+      else
+      {
+        // we don't have any source to republish, so we don't need a publisher
+        // also, if the source topic type changes while it's offline this
+        // prevents a crash due to mismatched topic types
+        std::scoped_lock lock(pub_mutex_);
+        topic.pub_.reset();
       }
-    } else {
-      // Lazy and no subscriber doesn't need to subscribe
-      sub_.reset();
-    }
-  } else {
-    // we don't have any source to republish, so we don't need a publisher
-    // also, if the source topic type changes while it's offline this
-    // prevents a crash due to mismatched topic types
-    std::scoped_lock lock(pub_mutex_);
-    pub_.reset();
-  }
-}
-
-std::optional<std::pair<std::string, rclcpp::QoS>> ToolBaseNode::try_discover_source()
-{
-  // borrowed this from domain bridge
-  // (https://github.com/ros2/domain_bridge/blob/main/src/domain_bridge/wait_for_graph_events.hpp)
-  // Query QoS info for publishers
-  std::vector<rclcpp::TopicEndpointInfo> endpoint_info_vec =
-    this->get_publishers_info_by_topic(input_topic_);
-  std::size_t num_endpoints = endpoint_info_vec.size();
-
-  // If there are no publishers, return an empty optional
-  if (num_endpoints < 1u) {
-    return {};
-  }
-
-  // Initialize QoS
-  rclcpp::QoS qos{10};
-  // Default reliability and durability to value of first endpoint
-  qos.reliability(endpoint_info_vec[0].qos_profile().reliability());
-  qos.durability(endpoint_info_vec[0].qos_profile().durability());
-  // Always use automatic liveliness
-  qos.liveliness(rclcpp::LivelinessPolicy::Automatic);
-
-  // Reliability and durability policies can cause trouble with enpoint matching
-  // Count number of "reliable" publishers and number of "transient local" publishers
-  std::size_t reliable_count = 0u;
-  std::size_t transient_local_count = 0u;
-  // For duration-based policies, note the largest value to ensure matching all publishers
-  rclcpp::Duration max_deadline(0, 0u);
-  rclcpp::Duration max_lifespan(0, 0u);
-  for (const auto & info : endpoint_info_vec) {
-    const auto & profile = info.qos_profile();
-    if (profile.reliability() == rclcpp::ReliabilityPolicy::Reliable) {
-      reliable_count++;
-    }
-    if (profile.durability() == rclcpp::DurabilityPolicy::TransientLocal) {
-      transient_local_count++;
-    }
-    if (profile.deadline() > max_deadline) {
-      max_deadline = profile.deadline();
-    }
-    if (profile.lifespan() > max_lifespan) {
-      max_lifespan = profile.lifespan();
     }
   }
 
-  // If not all publishers have a "reliable" policy, then use a "best effort" policy
-  // and print a warning
-  if (reliable_count > 0u && reliable_count != num_endpoints) {
-    qos.best_effort();
-    RCLCPP_WARN(
-      this->get_logger(), "Some, but not all, publishers on topic %s "
-      "offer 'reliable' reliability. Falling back to 'best effort' reliability in order"
-      "to connect to all publishers.", input_topic_.c_str());
-  }
+  std::optional<std::pair<std::string, rclcpp::QoS>>ToolBaseNode::try_discover_source(
+    TopicInstance& topic)
+  {
+    // borrowed this from domain bridge
+    // (https://github.com/ros2/domain_bridge/blob/main/src/domain_bridge/wait_for_graph_events.hpp)
+    // Query QoS info for publishers
+    std::vector<rclcpp::TopicEndpointInfo>endpoint_info_vec =
+      this->get_publishers_info_by_topic(topic.input_topic_);
+    std::size_t num_endpoints = endpoint_info_vec.size();
 
-  // If not all publishers have a "transient local" policy, then use a "volatile" policy
-  // and print a warning
-  if (transient_local_count > 0u && transient_local_count != num_endpoints) {
-    qos.durability_volatile();
-    RCLCPP_WARN(
-      this->get_logger(), "Some, but not all, publishers on topic %s "
-      "offer 'transient local' durability. Falling back to 'volatile' durability in order"
-      "to connect to all publishers.", input_topic_.c_str());
-  }
+    // If there are no publishers, return an empty optional
+    if (num_endpoints < 1u)
+    {
+      return {};
+    }
 
-  qos.deadline(max_deadline);
-  qos.lifespan(max_lifespan);
+    // Initialize QoS
+    rclcpp::QoS qos{ 10 };
 
-  if (!endpoint_info_vec.empty()) {
-    return std::make_pair(endpoint_info_vec[0].topic_type(), qos);
-  } else {
-    return {};
+    // Default reliability and durability to value of first endpoint
+    qos.reliability(endpoint_info_vec[0].qos_profile().reliability());
+    qos.durability(endpoint_info_vec[0].qos_profile().durability());
+
+    // Always use automatic liveliness
+    qos.liveliness(rclcpp::LivelinessPolicy::Automatic);
+
+    // Reliability and durability policies can cause trouble with enpoint
+    // matching
+    // Count number of "reliable" publishers and number of "transient local"
+    // publishers
+    std::size_t reliable_count = 0u;
+    std::size_t transient_local_count = 0u;
+
+    // For duration-based policies, note the largest value to ensure matching
+    // all publishers
+    rclcpp::Duration max_deadline(0, 0u);
+    rclcpp::Duration max_lifespan(0, 0u);
+
+    for (const auto& info : endpoint_info_vec)
+    {
+      const auto& profile = info.qos_profile();
+
+      if (profile.reliability() == rclcpp::ReliabilityPolicy::Reliable)
+      {
+        reliable_count++;
+      }
+
+      if (profile.durability() == rclcpp::DurabilityPolicy::TransientLocal)
+      {
+        transient_local_count++;
+      }
+
+      if (profile.deadline() > max_deadline)
+      {
+        max_deadline = profile.deadline();
+      }
+
+      if (profile.lifespan() > max_lifespan)
+      {
+        max_lifespan = profile.lifespan();
+      }
+    }
+
+    // If not all publishers have a "reliable" policy, then use a "best effort"
+    // policy
+    // and print a warning
+    if ((reliable_count > 0u) && (reliable_count != num_endpoints))
+    {
+      qos.best_effort();
+      RCLCPP_WARN(
+        this->get_logger(),
+        "Some, but not all, publishers on topic %s "
+        "offer 'reliable' reliability. Falling back to 'best effort' reliability in order"
+        "to connect to all publishers.",
+        topic.input_topic_.c_str());
+    }
+
+    // If not all publishers have a "transient local" policy, then use a
+    // "volatile" policy
+    // and print a warning
+    if ((transient_local_count > 0u) && (transient_local_count != num_endpoints))
+    {
+      qos.durability_volatile();
+      RCLCPP_WARN(
+        this->get_logger(),
+        "Some, but not all, publishers on topic %s "
+        "offer 'transient local' durability. Falling back to 'volatile' durability in order"
+        "to connect to all publishers.",
+        topic.input_topic_.c_str());
+    }
+
+    qos.deadline(max_deadline);
+    qos.lifespan(max_lifespan);
+
+    if (!endpoint_info_vec.empty())
+    {
+      return std::make_pair(endpoint_info_vec[0].topic_type(), qos);
+    }
+    else
+    {
+      return {};
+    }
   }
-}
-}  // namespace topic_tools
+} // namespace topic_tools

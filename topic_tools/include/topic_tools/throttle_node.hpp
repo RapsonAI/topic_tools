@@ -17,7 +17,7 @@
 
 #include <deque>
 #include <memory>
-#include <optional>  // NOLINT : https://github.com/ament/ament_lint/pull/324
+#include <optional> // NOLINT : https://github.com/ament/ament_lint/pull/324
 #include <string>
 #include <utility>
 
@@ -27,30 +27,30 @@
 
 namespace topic_tools
 {
-class ThrottleNode final : public ToolBaseNode
-{
-  using Sent = std::pair<double, size_t>;
+  class ThrottleNode final : public ToolBaseNode
+  {
+    using Sent = std::pair<double, size_t>;
 
 public:
-  TOPIC_TOOLS_PUBLIC
-  explicit ThrottleNode(const rclcpp::NodeOptions & options);
+
+    TOPIC_TOOLS_PUBLIC
+    explicit ThrottleNode(const rclcpp::NodeOptions& options);
 
 private:
-  void process_message(std::shared_ptr<rclcpp::SerializedMessage> msg) override;
 
-  enum class ThrottleType
-  {
-    MESSAGES,
-    BYTES,
-  } throttle_type_;
-  double msgs_per_sec_;
-  std::chrono::nanoseconds period_;
-  int64_t bytes_per_sec_;
-  double window_;
-  rclcpp::Time last_time_;
-  bool use_wall_clock_;
-  std::deque<Sent> sent_deque_;
-};
-}  // namespace topic_tools
+    void process_message(
+      TopicInstance& topic,
+      std::shared_ptr<rclcpp::SerializedMessage>msg) override;
+
+    enum class ThrottleType
+    {
+      MESSAGES,
+      BYTES,
+    } throttle_type_;
+
+    bool use_wall_clock_;
+    std::deque<Sent>sent_deque_;
+  };
+} // namespace topic_tools
 
 #endif  // TOPIC_TOOLS__THROTTLE_NODE_HPP_
