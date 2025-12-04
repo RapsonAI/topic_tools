@@ -30,7 +30,7 @@ def load_throttle_node(context, *args, **kwargs):
     for topic in throttles.get("input_topics", []):
         topic_name = topic["topic_name"]
         input_topics.append(topic_name)
-        output_topics.append(topic_name + "_telemetry")
+        output_topics.append("/telemetry" + topic_name)
         msgs_per_sec_list.append(topic["msgs_per_sec"])
 
     parameters = [
