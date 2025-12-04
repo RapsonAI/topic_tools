@@ -100,8 +100,14 @@ namespace topic_tools
 
       if ((now - topic.last_time_).nanoseconds() >= topic.period_.count())
       {
-        topic.pub_->publish(*msg);
-        topic.last_time_ = now;
+        try
+        {
+          topic.pub_->publish(*msg);
+          topic.last_time_ = now;
+        }
+        catch (const rclcpp::exceptions::RCLError&)
+        {
+        }
       }
     }
     else if (throttle_type_ == ThrottleType::BYTES)
@@ -122,8 +128,14 @@ namespace topic_tools
 
       if (bytes < topic.bytes_per_sec_)
       {
-        topic.pub_->publish(*msg);
-        sent_deque_.emplace_back(now.seconds(), msg->size());
+        try
+        {
+          topic.pub_->publish(*msg);
+          sent_deque_.emplace_back(now.seconds(), msg->size());
+        }
+        catch (const rclcpp::exceptions::RCLError&)
+        {
+        }
       }
     }
   }
